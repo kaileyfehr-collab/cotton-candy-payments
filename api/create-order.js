@@ -9,6 +9,12 @@ const PRICE_LIST = {
   "Large bag": { price: 1500, maxFlavours: 3 }
 };
 
+// Create a quick lookup map for normalized names
+const NORMALIZED_LOOKUP = {};
+for (const key of Object.keys(PRICE_LIST)) {
+  NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
+}
+
 export default async function handler(req, res) {
 
   // ==== CORS FIX ====
@@ -16,11 +22,8 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
   // ==== END CORS FIX ====
-
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -35,12 +38,21 @@ export default async function handler(req, res) {
     let total = 0;
     const items = [];
 
+    // Normalize names before validation
+    for (const entry of cart) {
+      if (!entry.name) continue;
+      const normalized = entry.name.toLowerCase().trim();
+      entry.name = NORMALIZED_LOOKUP[normalized] || entry.name;
+    }
+
     for (const entry of cart) {
       const { name, quantity = 1, flavours } = entry;
-      if (!PRICE_LIST[name]) {
+      const priceObj = PRICE_LIST[name];
+      if (!priceObj) {
         return res.status(400).json({ error: `Unknown item: ${name}` });
       }
-      const { price, maxFlavours } = PRICE_LIST[name];
+
+      const { price, maxFlavours } = priceObj;
       const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
       if (flavourCount > maxFlavours) {
         return res.status(400).json({ error: `${name} allows up to ${maxFlavours} flavour(s)` });
