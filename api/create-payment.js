@@ -15,7 +15,7 @@ const PRICE_LIST = {
   "Large bag": { price: 1500, maxFlavours: 3 }
 };
 
-// Make a quick lookup map for normalized names
+// Quick lookup map for normalized names
 const NORMALIZED_LOOKUP = {};
 for (const key of Object.keys(PRICE_LIST)) {
   NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
@@ -43,6 +43,7 @@ function buildLineItems(cart) {
 }
 
 export default async function handler(req, res) {
+
   // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -52,14 +53,30 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const cart = req.body?.cart;
-    const redirectUrl = req.body?.redirectUrl || null;
+    let cart = req.body?.cart;
+
+    // If cart is missing, try to parse body as array
+    if (!cart) {
+      if (Array.isArray(req.body)) {
+        cart = req.body;
+      } else if (typeof req.body === "string") {
+        try {
+          const parsed = JSON.parse(req.body);
+          if (Array.isArray(parsed)) cart = parsed;
+          else if (parsed?.cart) cart = parsed.cart;
+        } catch (e) {
+          // ignore, will fail below
+        }
+      }
+    }
 
     if (!Array.isArray(cart) || cart.length === 0) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    // Normalize names and silently fix them if needed
+    const redirectUrl = req.body?.redirectUrl || null;
+
+    // Normalize names
     for (const entry of cart) {
       if (!entry.name) continue;
       const normalized = entry.name.toLowerCase().trim();
@@ -107,6 +124,7 @@ export default async function handler(req, res) {
 
     const checkoutUrl = json?.payment_link?.url;
     return res.status(200).json({ success: true, checkoutUrl, squareResponse: json });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
