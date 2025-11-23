@@ -43,6 +43,10 @@ function buildLineItems(cart) {
 }
 
 export default async function handler(req, res) {
+
+  console.log("Incoming request body:", req.body);
+  console.log("Incoming cart:", req.body?.cart);
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
