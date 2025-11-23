@@ -9,7 +9,7 @@ const PRICE_LIST = {
   "Large bag": { price: 1500, maxFlavours: 3 }
 };
 
-// Create a quick lookup map for normalized names
+// Quick lookup map for normalized names
 const NORMALIZED_LOOKUP = {};
 for (const key of Object.keys(PRICE_LIST)) {
   NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
@@ -17,57 +17,63 @@ for (const key of Object.keys(PRICE_LIST)) {
 
 export default async function handler(req, res) {
 
-  // ==== CORS FIX ====
+  // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  // ==== END CORS FIX ====
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const cart = req.body?.cart;
+    let cart = req.body?.cart;
+
+    // Fallbacks if cart is missing
+    if (!cart) {
+      if (Array.isArray(req.body)) {
+        cart = req.body;
+      } else if (typeof req.body === "string") {
+        try {
+          const parsed = JSON.parse(req.body);
+          if (Array.isArray(parsed)) cart = parsed;
+          else if (parsed?.cart) cart = parsed.cart;
+        } catch (e) {
+          // ignore, will fail below
+        }
+      }
+    }
+
     if (!Array.isArray(cart) || cart.length === 0) {
-      return res.status(400).json({ error: "Cart must be a non-empty array" });
+      return res.status(400).json({ error: "Cart required" });
     }
 
     let total = 0;
     const items = [];
 
-    // Normalize names before validation
+    // Normalize names
     for (const entry of cart) {
       if (!entry.name) continue;
       const normalized = entry.name.toLowerCase().trim();
       entry.name = NORMALIZED_LOOKUP[normalized] || entry.name;
     }
 
+    // Validate items
     for (const entry of cart) {
       const { name, quantity = 1, flavours } = entry;
       const priceObj = PRICE_LIST[name];
-      if (!priceObj) {
-        return res.status(400).json({ error: `Unknown item: ${name}` });
-      }
+      if (!priceObj) return res.status(400).json({ error: `Unknown item: ${name}` });
 
-      const { price, maxFlavours } = priceObj;
       const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
-      if (flavourCount > maxFlavours) {
-        return res.status(400).json({ error: `${name} allows up to ${maxFlavours} flavour(s)` });
-      }
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
-        return res.status(400).json({ error: `Invalid quantity for ${name}` });
-      }
+      if (flavourCount > priceObj.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) return res.status(400).json({ error: `Invalid quantity for ${name}` });
 
-      const lineTotal = price * quantity;
+      const lineTotal = priceObj.price * quantity;
       total += lineTotal;
       items.push({
         name,
         quantity,
         flavours: flavours || [],
-        unit_price_cents: price,
+        unit_price_cents: priceObj.price,
         line_total_cents: lineTotal
       });
     }
@@ -78,6 +84,7 @@ export default async function handler(req, res) {
       total_cents: total,
       total_display: `$${(total / 100).toFixed(2)}`
     });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
