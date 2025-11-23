@@ -1,7 +1,4 @@
 // api/create-payment.js
-// Expects POST { cart: [...] , redirectUrl?: "https://..." }
-// Returns: { success:true, checkoutUrl: "https://..." }
-
 const SQUARE_ENV = process.env.SQUARE_ENV || "sandbox";
 const SQUARE_ACCESS_TOKEN = process.env.SQUARE_ACCESS_TOKEN;
 const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID;
@@ -18,69 +15,70 @@ const PRICE_LIST = {
   "Large bag": { price: 1500, maxFlavours: 3 }
 };
 
+// Create a quick lookup map for normalized names
+const NORMALIZED_LOOKUP = {};
+for (const key of Object.keys(PRICE_LIST)) {
+  NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
+}
+
 const SQUARE_BASE =
   SQUARE_ENV === "production"
     ? "https://connect.squareup.com"
     : "https://connect.squareupsandbox.com";
 
 function buildLineItems(cart) {
-  return cart.map((entry, i) => {
-    const { name, quantity = 1 } = entry;
+  return cart.map(entry => {
+    const { name, quantity = 1, flavours } = entry;
     const priceObj = PRICE_LIST[name];
-    const itemPrice = priceObj.price;
     return {
-      name: name,
+      name,
       quantity: String(quantity),
       base_price_money: {
-        amount: itemPrice,
+        amount: priceObj.price,
         currency: "CAD"
       },
-      note: entry.flavours ? `Flavours: ${Array.isArray(entry.flavours) ? entry.flavours.join(", ") : entry.flavours}` : ""
+      note: flavours ? `Flavours: ${Array.isArray(flavours) ? flavours.join(", ") : flavours}` : ""
     };
   });
 }
 
 export default async function handler(req, res) {
-
-  // ==== CORS FIX ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  // ==== END CORS FIX ====
-
-
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
     const cart = req.body?.cart;
-    const redirectUrl = req.body?.redirectUrl || null; // where Square should send user after payment
+    const redirectUrl = req.body?.redirectUrl || null;
+
     if (!Array.isArray(cart) || cart.length === 0) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    // basic validation same as create-order
-    let total = 0;
+    // Normalize incoming cart names to match PRICE_LIST
     for (const entry of cart) {
-      const { name, quantity = 1, flavours } = entry;
-      const p = PRICE_LIST[name];
-      if (!p) return res.status(400).json({ error: `Unknown item: ${name}` });
-      const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
-      if (flavourCount > p.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${p.maxFlavours} flavour(s)` });
-      if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: `Invalid quantity for ${name}` });
-      total += p.price * quantity;
+      const normalizedName = entry.name.toLowerCase().trim();
+      if (!NORMALIZED_LOOKUP[normalizedName]) {
+        return res.status(400).json({ error: `Unknown item: ${entry.name}` });
+      }
+      entry.name = NORMALIZED_LOOKUP[normalizedName]; // Replace with correct casing from PRICE_LIST
     }
 
-    // Build order line items for Square
+    // Validate items
+    for (const entry of cart) {
+      const { name, quantity = 1, flavours } = entry;
+      const priceObj = PRICE_LIST[name];
+      const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
+      if (flavourCount > priceObj.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
+      if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: `Invalid quantity for ${name}` });
+    }
+
     const line_items = buildLineItems(cart);
+    const idempotencyKey = crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
-    // idempotency key
-    const idempotencyKey = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-
-    // Create payment link via Square Payment Links API
     const body = {
       idempotency_key: idempotencyKey,
       order: {
@@ -90,9 +88,7 @@ export default async function handler(req, res) {
       checkout_options: {}
     };
 
-    if (redirectUrl) {
-      body.checkout_options.redirect_url = redirectUrl;
-    }
+    if (redirectUrl) body.checkout_options.redirect_url = redirectUrl;
 
     const response = await fetch(`${SQUARE_BASE}/v2/online-checkout/payment-links`, {
       method: "POST",
