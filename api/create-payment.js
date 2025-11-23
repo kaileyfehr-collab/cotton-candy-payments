@@ -41,6 +41,18 @@ function buildLineItems(cart) {
 }
 
 export default async function handler(req, res) {
+
+  // ==== CORS FIX ====
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  // ==== END CORS FIX ====
+
+
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
@@ -81,10 +93,6 @@ export default async function handler(req, res) {
     if (redirectUrl) {
       body.checkout_options.redirect_url = redirectUrl;
     }
-
-    // Optional: include a logo or merchant name in the checkout (if you have one)
-    // Example to include an image URL (you can host a logo and pass the URL here)
-    // body.checkout_options.logo_url = "file:///mnt/data/B86995C4-513E-4E62-9137-FB10E3A9F8D7.jpeg";
 
     const response = await fetch(`${SQUARE_BASE}/v2/online-checkout/payment-links`, {
       method: "POST",
