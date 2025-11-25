@@ -44,6 +44,8 @@ function buildLineItems(cart) {
 
 export default async function handler(req, res) {
 
+  console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
+
   // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -53,18 +55,31 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // DEBUG log to see exactly what is sent
-    console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
+    // Flexible cart detection for Base44 and other formats
+    let cart = null;
 
-    // ✅ Use the cart exactly as received
-    const cart = req.body?.cart;
-    const redirectUrl = req.body?.redirectUrl || null;
+    if (Array.isArray(req.body)) {
+      cart = req.body;
+    } else if (req.body?.cart) {
+      cart = req.body.cart;
+    } else if (req.body?.inputs?.cart) {
+      cart = req.body.inputs.cart;
+    } else if (typeof req.body === "string") {
+      try {
+        const parsed = JSON.parse(req.body);
+        if (Array.isArray(parsed)) cart = parsed;
+        else if (parsed?.cart) cart = parsed.cart;
+        else if (parsed?.inputs?.cart) cart = parsed.inputs.cart;
+      } catch (e) { }
+    }
 
     if (!Array.isArray(cart) || cart.length === 0) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    // Normalize item names
+    const redirectUrl = req.body?.redirectUrl || null;
+
+    // Normalize names
     for (const entry of cart) {
       if (!entry.name) continue;
       const normalized = entry.name.toLowerCase().trim();
