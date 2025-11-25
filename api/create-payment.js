@@ -15,7 +15,7 @@ const PRICE_LIST = {
   "Large bag": { price: 1500, maxFlavours: 3 }
 };
 
-// Quick lookup map
+// Quick lookup map for normalized names
 const NORMALIZED_LOOKUP = {};
 for (const key of Object.keys(PRICE_LIST)) {
   NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
@@ -44,7 +44,7 @@ function buildLineItems(cart) {
 
 export default async function handler(req, res) {
 
-  // ---- CORS ----
+  // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -52,63 +52,34 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-
-  // ******** DEBUG: RETURN RECEIVED BODY ********
-  if (req.query.debug === "1") {
-    return res.status(200).json({
-      received: req.body
-    });
-  }
-  // ********************************************
-
-
   try {
+    // DEBUG log to see exactly what is sent
+    console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
 
-    let cart = req.body?.cart;
-
-    // Try alternative parsing
-    if (!cart) {
-      if (Array.isArray(req.body)) {
-        cart = req.body;
-      } else if (typeof req.body === "string") {
-        try {
-          const parsed = JSON.parse(req.body);
-          if (Array.isArray(parsed)) {
-            cart = parsed;
-          } else if (parsed?.cart) {
-            cart = parsed.cart;
-          }
-        } catch {}
-      }
-    }
+    // ✅ Use the cart exactly as received
+    const cart = req.body?.cart;
+    const redirectUrl = req.body?.redirectUrl || null;
 
     if (!Array.isArray(cart) || cart.length === 0) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    const redirectUrl = req.body?.redirectUrl || null;
-
-    // Normalize names
+    // Normalize item names
     for (const entry of cart) {
       if (!entry.name) continue;
       const normalized = entry.name.toLowerCase().trim();
       entry.name = NORMALIZED_LOOKUP[normalized] || entry.name;
     }
 
-    // Validate
+    // Validate items
     for (const entry of cart) {
       const { name, quantity = 1, flavours } = entry;
       const priceObj = PRICE_LIST[name];
-      if (!priceObj) {
-        return res.status(400).json({ error: `Unknown item: ${name}` });
-      }
+      if (!priceObj) return res.status(400).json({ error: `Unknown item: ${name}` });
+
       const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
-      if (flavourCount > priceObj.maxFlavours) {
-        return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
-      }
-      if (!Number.isInteger(quantity) || quantity < 1) {
-        return res.status(400).json({ error: `Invalid quantity for ${name}` });
-      }
+      if (flavourCount > priceObj.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
+      if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: `Invalid quantity for ${name}` });
     }
 
     const line_items = buildLineItems(cart);
@@ -116,16 +87,11 @@ export default async function handler(req, res) {
 
     const body = {
       idempotency_key: idempotencyKey,
-      order: {
-        location_id: SQUARE_LOCATION_ID,
-        line_items
-      },
+      order: { location_id: SQUARE_LOCATION_ID, line_items },
       checkout_options: {}
     };
 
-    if (redirectUrl) {
-      body.checkout_options.redirect_url = redirectUrl;
-    }
+    if (redirectUrl) body.checkout_options.redirect_url = redirectUrl;
 
     const response = await fetch(`${SQUARE_BASE}/v2/online-checkout/payment-links`, {
       method: "POST",
@@ -143,11 +109,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Square API error", details: json });
     }
 
-    return res.status(200).json({
-      success: true,
-      checkoutUrl: json?.payment_link?.url,
-      squareResponse: json
-    });
+    const checkoutUrl = json?.payment_link?.url;
+    return res.status(200).json({ success: true, checkoutUrl, squareResponse: json });
 
   } catch (err) {
     console.error(err);
