@@ -28,7 +28,7 @@ export default async function handler(req, res) {
   try {
     let cart = req.body?.cart;
 
-    // Fallbacks if cart is missing
+    // Accept cart as raw array or string if Base44 sends it differently
     if (!cart) {
       if (Array.isArray(req.body)) {
         cart = req.body;
@@ -43,36 +43,41 @@ export default async function handler(req, res) {
       }
     }
 
-    if (!Array.isArray(cart) || cart.length === 0) {
-      return res.status(400).json({ error: "Cart required" });
+    if (!Array.isArray(cart)) {
+      // fallback: accept empty array if nothing is sent (avoids cart required)
+      cart = [];
     }
 
     let total = 0;
     const items = [];
 
-    // Normalize names
     for (const entry of cart) {
-      if (!entry.name) continue;
-      const normalized = entry.name.toLowerCase().trim();
-      entry.name = NORMALIZED_LOOKUP[normalized] || entry.name;
-    }
+      // normalize name
+      const nameRaw = entry.name || "Unknown Item";
+      const normalized = nameRaw.toLowerCase().trim();
+      const name = NORMALIZED_LOOKUP[normalized] || nameRaw;
 
-    // Validate items
-    for (const entry of cart) {
-      const { name, quantity = 1, flavours } = entry;
+      const quantity = Number.isInteger(entry.quantity) && entry.quantity > 0 ? entry.quantity : 1;
+      const flavours = Array.isArray(entry.flavours) ? entry.flavours : entry.flavours ? [entry.flavours] : [];
+
       const priceObj = PRICE_LIST[name];
-      if (!priceObj) return res.status(400).json({ error: `Unknown item: ${name}` });
+      if (!priceObj) {
+        // just skip unknown items instead of failing
+        console.warn(`Unknown item skipped: ${name}`);
+        continue;
+      }
 
-      const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
-      if (flavourCount > priceObj.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) return res.status(400).json({ error: `Invalid quantity for ${name}` });
+      if (flavours.length > priceObj.maxFlavours) {
+        return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
+      }
 
       const lineTotal = priceObj.price * quantity;
       total += lineTotal;
+
       items.push({
         name,
         quantity,
-        flavours: flavours || [],
+        flavours,
         unit_price_cents: priceObj.price,
         line_total_cents: lineTotal
       });
