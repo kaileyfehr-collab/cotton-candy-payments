@@ -44,6 +44,8 @@ function buildLineItems(cart) {
 
 export default async function handler(req, res) {
 
+  console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
+
   // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
