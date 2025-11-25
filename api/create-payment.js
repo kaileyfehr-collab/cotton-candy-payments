@@ -1,131 +1,93 @@
 // api/create-payment.js
+// Expects POST { cart: [...] , redirectUrl?: "https://..." }
+// Returns: { success:true, checkoutUrl: "https://..." }
+
+import fetch from 'node-fetch'; // or use native fetch in Next.js 13+
+import createOrder from './create-order'; // import if modularized
+
 const SQUARE_ENV = process.env.SQUARE_ENV || "sandbox";
 const SQUARE_ACCESS_TOKEN = process.env.SQUARE_ACCESS_TOKEN;
 const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 
-if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
-  console.warn("Missing Square env vars. Set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID in Vercel.");
-}
-
-const PRICE_LIST = {
-  "Mini stick": { price: 500, maxFlavours: 1 },
-  "2-flavour stick": { price: 800, maxFlavours: 2 },
-  "3-flavour stick": { price: 1000, maxFlavours: 3 },
-  "Small bag": { price: 1000, maxFlavours: 2 },
-  "Large bag": { price: 1500, maxFlavours: 3 }
-};
-
-// Quick lookup map for normalized names
-const NORMALIZED_LOOKUP = {};
-for (const key of Object.keys(PRICE_LIST)) {
-  NORMALIZED_LOOKUP[key.toLowerCase().trim()] = key;
-}
-
-const SQUARE_BASE =
-  SQUARE_ENV === "production"
-    ? "https://connect.squareup.com"
-    : "https://connect.squareupsandbox.com";
-
-function buildLineItems(cart) {
-  return cart.map(entry => {
-    const { name, quantity = 1, flavours } = entry;
-    const priceObj = PRICE_LIST[name];
-    return {
-      name,
-      quantity: String(quantity),
-      base_price_money: {
-        amount: priceObj.price,
-        currency: "CAD"
-      },
-      note: flavours ? `Flavours: ${Array.isArray(flavours) ? flavours.join(", ") : flavours}` : ""
-    };
-  });
-}
-
 export default async function handler(req, res) {
-
-  console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
-
   // ==== CORS ====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") return res.status(200).json({ error: "Method not allowed" });
 
   try {
-    // Flexible cart detection for Base44 and other formats
-    let cart = null;
+    let cart = req.body?.cart;
+    const redirectUrl = req.body?.redirectUrl || `${req.headers.origin || ""}/success`;
 
-    if (Array.isArray(req.body)) {
-      cart = req.body;
-    } else if (req.body?.cart) {
-      cart = req.body.cart;
-    } else if (req.body?.inputs?.cart) {
-      cart = req.body.inputs.cart;
-    } else if (typeof req.body === "string") {
-      try {
-        const parsed = JSON.parse(req.body);
-        if (Array.isArray(parsed)) cart = parsed;
-        else if (parsed?.cart) cart = parsed.cart;
-        else if (parsed?.inputs?.cart) cart = parsed.inputs.cart;
-      } catch (e) { }
+    // fallback if Base44 sends raw JSON string
+    if (!cart) {
+      if (Array.isArray(req.body)) {
+        cart = req.body;
+      } else if (typeof req.body === "string") {
+        try {
+          const parsed = JSON.parse(req.body);
+          if (Array.isArray(parsed)) cart = parsed;
+          else if (parsed?.cart) cart = parsed.cart;
+        } catch (e) {
+          return res.status(400).json({ error: "Invalid cart data" });
+        }
+      }
     }
 
     if (!Array.isArray(cart) || cart.length === 0) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    const redirectUrl = req.body?.redirectUrl || null;
+    // Validate cart with createOrder logic
+    const orderResult = await createOrder({ body: { cart }, method: "POST" });
+    const orderJson = typeof orderResult.json === "function" ? await orderResult.json() : orderResult;
 
-    // Normalize names
-    for (const entry of cart) {
-      if (!entry.name) continue;
-      const normalized = entry.name.toLowerCase().trim();
-      entry.name = NORMALIZED_LOOKUP[normalized] || entry.name;
+    if (!orderJson.success) {
+      return res.status(400).json({ error: orderJson.error || "Invalid order" });
     }
 
-    // Validate items
-    for (const entry of cart) {
-      const { name, quantity = 1, flavours } = entry;
-      const priceObj = PRICE_LIST[name];
-      if (!priceObj) return res.status(400).json({ error: `Unknown item: ${name}` });
+    // Build line items for Square
+    const line_items = orderJson.items.map(item => ({
+      name: item.name,
+      quantity: item.quantity.toString(),
+      base_price_money: {
+        amount: item.unit_price_cents,
+        currency: "CAD"
+      }
+    }));
 
-      const flavourCount = Array.isArray(flavours) ? flavours.length : (flavours ? 1 : 0);
-      if (flavourCount > priceObj.maxFlavours) return res.status(400).json({ error: `${name} allows up to ${priceObj.maxFlavours} flavour(s)` });
-      if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: `Invalid quantity for ${name}` });
-    }
-
-    const line_items = buildLineItems(cart);
-    const idempotencyKey = crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-
-    const body = {
-      idempotency_key: idempotencyKey,
-      order: { location_id: SQUARE_LOCATION_ID, line_items },
-      checkout_options: {}
-    };
-
-    if (redirectUrl) body.checkout_options.redirect_url = redirectUrl;
-
-    const response = await fetch(`${SQUARE_BASE}/v2/online-checkout/payment-links`, {
+    // Call Square Checkout API
+    const response = await fetch(`https://connect.squareup.com/v2/checkout/orders`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${SQUARE_ACCESS_TOKEN}`,
-        "Accept": "application/json"
+        "Authorization": `Bearer ${SQUARE_ACCESS_TOKEN}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        idempotency_key: `${Date.now()}-${Math.random()}`,
+        order: {
+          location_id: SQUARE_LOCATION_ID,
+          line_items
+        },
+        ask_for_shipping_address: false,
+        redirect_url: redirectUrl
+      })
     });
 
-    const json = await response.json();
+    const data = await response.json();
+
     if (!response.ok) {
-      console.error("Square error:", json);
-      return res.status(500).json({ error: "Square API error", details: json });
+      console.error(data);
+      return res.status(400).json({ error: data?.errors?.[0]?.detail || "Payment creation failed" });
     }
 
-    const checkoutUrl = json?.payment_link?.url;
-    return res.status(200).json({ success: true, checkoutUrl, squareResponse: json });
+    return res.status(200).json({
+      success: true,
+      checkoutUrl: data.checkout?.checkout_page_url
+    });
 
   } catch (err) {
     console.error(err);
