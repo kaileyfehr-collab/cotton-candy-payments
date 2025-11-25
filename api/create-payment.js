@@ -44,9 +44,7 @@ function buildLineItems(cart) {
 
 export default async function handler(req, res) {
 
-  console.log("DEBUG incoming body:", JSON.stringify(req.body, null, 2));
-
-  // ==== CORS ====
+  // ===== CORS =====
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -55,20 +53,29 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    let cart = req.body?.cart;
+    console.log("DEBUG FULL BODY:", JSON.stringify(req.body, null, 2));
 
-    // If cart is missing, try to parse body as array
+    // NEW SUPER FLEXIBLE CART DETECTION
+    let cart =
+      req.body?.cart ||
+      req.body?.data?.cart ||
+      req.body?.payload?.cart ||
+      req.body?.items ||
+      req.body?.order?.items ||
+      null;
+
+    // If that fails, fallback to "raw" possibilities
     if (!cart) {
       if (Array.isArray(req.body)) {
         cart = req.body;
       } else if (typeof req.body === "string") {
         try {
           const parsed = JSON.parse(req.body);
-          if (Array.isArray(parsed)) cart = parsed;
-          else if (parsed?.cart) cart = parsed.cart;
-        } catch (e) {
-          // ignore, will fail below
-        }
+          cart =
+            parsed?.cart ||
+            parsed?.data?.cart ||
+            (Array.isArray(parsed) ? parsed : null);
+        } catch (_) {}
       }
     }
 
@@ -76,7 +83,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Cart required" });
     }
 
-    const redirectUrl = req.body?.redirectUrl || null;
+    const redirectUrl =
+      req.body?.redirectUrl ||
+      req.body?.data?.redirectUrl ||
+      null;
 
     // Normalize names
     for (const entry of cart) {
